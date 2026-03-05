@@ -1,488 +1,480 @@
-{\rtf1\ansi\ansicpg1252\cocoartf2868
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
-{\colortbl;\red255\green255\blue255;}
-{\*\expandedcolortbl;;}
-\margl1440\margr1440\vieww11520\viewh8400\viewkind0
-\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+# ============================================================
+#  WALLBOX AUTO-RELOAD — automations.yaml
+#  Automatically reloads the Wallbox integration if sensors
+#  go unavailable for 2+ minutes (cloud polling dropout fix)
+# ============================================================
 
-\f0\fs24 \cf0 # ============================================================\
-#  WALLBOX AUTO-RELOAD \'97 automations.yaml\
-#  Automatically reloads the Wallbox integration if sensors\
-#  go unavailable for 2+ minutes (cloud polling dropout fix)\
-# ============================================================\
-\
-- id: wallbox_auto_reload\
-  alias: Wallbox Auto Reload on Unavailable\
-  mode: single\
-\
-  trigger:\
-    - platform: state\
-      entity_id:\
-        - sensor.wallbox_pulsar_plus_sn_1331793_charging_power\
-        - sensor.wallbox_pulsar_plus_sn_1331793_status_description\
-        - number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-      to: "unavailable"\
-      for:\
-        minutes: 2\
-\
-  action:\
-    - service: logbook.log\
-      data:\
-        name: "Wallbox Auto Reload"\
-        message: "\uc0\u9888 \u65039  Wallbox sensor unavailable for 2 min \'97 triggering integration reload"\
-    - service: homeassistant.reload_config_entry\
-      target:\
-        entity_id: sensor.wallbox_pulsar_plus_sn_1331793_charging_power\
-    - delay:\
-        seconds: 30\
-    - service: logbook.log\
-      data:\
-        name: "Wallbox Auto Reload"\
-        message: >\
-          \uc0\u9989  Reload complete. Charging power now:\
-          \{\{ states('sensor.wallbox_pulsar_plus_sn_1331793_charging_power') \}\} kW,\
-          Status: \{\{ states('sensor.wallbox_pulsar_plus_sn_1331793_status_description') \}\}\
-\
-# ============================================================\
-#  EV SOLAR CONTROLLER \'97 automations.yaml\
-#  Updated: 2026-03-04 v4\
-#\
-#  ENTITY REFERENCE (confirmed):\
-#    Wallbox amp control : number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-#    Wallbox pause/resume: switch.wallbox_pulsar_plus_sn_1331793_pause_resume  (on=charging, off=paused)\
-#    Wallbox power (mean): sensor.wallbox_charging_power_mean_2m               (kW, 2m rolling avg)\
-#    Wallbox status      : sensor.wallbox_pulsar_plus_sn_1331793_status_description\
-#    Solar PV (mean)     : sensor.pv_power_mean_2m                             (W, 2m rolling avg)\
-#    Load (mean)         : sensor.load_power_mean_2m                           (W, 2m rolling avg)\
-#    Battery power (mean): sensor.battery_power_mean_2m                        (W, 2m rolling avg)\
-#    Battery SOC         : sensor.solarassistant_battery_state_of_charge       (%)\
-#\
-#  MANUAL OVERRIDES (input_boolean):\
-#    ev_max_charge_override  \uc0\u8594  forces 40A immediately, overrides everything\
-#    ev_throttle_active      \uc0\u8594  forces 8A immediately, overrides everything\
-#    If both ON simultaneously \uc0\u8594  last one set wins (equal priority)\
-#\
-#  TIME WINDOWS:\
-#    00:00\'9607:00  Night      \uc0\u8594  20A fixed (emergency overnight car need)\
-#    07:00\'9609:00  School     \uc0\u8594  40A fixed (quick top-up before school departure)\
-#    09:00\'9612:00  Morning    \uc0\u8594  Solar follow, reserve 1000W to battery, min 6A\
-#    12:00\'9616:00  Priority   \uc0\u8594  Tiered battery reserve by SOC, no battery discharge to EV\
-#                              SOC < 60%  \uc0\u8594  reserve 4000W to battery\
-#                              SOC 60-80% \uc0\u8594  reserve 3000W to battery\
-#                              SOC 80-98% \uc0\u8594  reserve 2000W to battery\
-#                              SOC >= 98% \uc0\u8594  battery full, 40A override\
-#                              EV amps always calculated from solar surplus only\
-#                              (battery never discharges to power EV in this window)\
-#    16:00\'9621:00  Evening    \uc0\u8594  SOC-aware solar-follow\
-#                              SOC >= 90%  \uc0\u8594  solar-follow, no reserve (dump surplus to EV)\
-#                              SOC 80-90% \uc0\u8594  solar-follow, reserve 1000W to battery\
-#                              SOC < 80%  \uc0\u8594  fixed 6A regardless of solar\
-#                              Battery NEVER discharges to power EV in this window\
-#    21:00\'9624:00  Pre-night  \uc0\u8594  10A (part-peak winding down, pre-midnight prep)\
-#\
-#  AUTOMATIC OVERRIDES (any window, checked first):\
-#    Battery SOC >= 98%         \uc0\u8594  40A (battery full, dump all solar to EV)\
-#    ev_max_charge_override ON  \uc0\u8594  40A (manual max charge request)\
-#    ev_throttle_active ON      \uc0\u8594  8A  (manual throttle request)\
-#    Car not charging           \uc0\u8594  skip amp logic\
-#\
-#  SURPLUS CALCULATION (corrected):\
-#    true_surplus = pv_power - (load_power - ev_power_w)\
-#    Removes EV draw from load so surplus reflects what is\
-#    actually available FOR the EV, not consumed by it.\
-#\
-#  BATTERY POWER SIGN CONVENTION (Solar Assistant):\
-#    Positive = charging into battery\
-#    Negative = discharging from battery\
-#\
-#  ALL POWER VALUES USE 2-MINUTE ROLLING AVERAGES for stability.\
-# ============================================================\
-\
-- id: ev_solar_controller\
-  alias: EV Solar Controller\
-  mode: restart\
-\
-  trigger:\
-    - platform: time_pattern\
-      minutes: "/3"\
-\
-  variables:\
-    hour: "\{\{ now().hour \}\}"\
-\
-    # ---- POWER SENSORS (2-minute rolling averages) ----\
-    pv_power:      "\{\{ states('sensor.pv_power_mean_2m') | float(0) \}\}"\
-    load_power:    "\{\{ states('sensor.load_power_mean_2m') | float(0) \}\}"\
-    battery_power: "\{\{ states('sensor.battery_power_mean_2m') | float(0) \}\}"\
-\
-    # ---- WALLBOX (2-minute rolling average, kW \uc0\u8594  W) ----\
-    ev_power_w:   "\{\{ (states('sensor.wallbox_charging_power_mean_2m') | float(0)) * 1000 \}\}"\
-    current_amp:  "\{\{ states('number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current') | float(6) \}\}"\
-    car_charging: "\{\{ states('sensor.wallbox_pulsar_plus_sn_1331793_status_description') | lower == 'charging' \}\}"\
-\
-    # ---- BATTERY ----\
-    battery_soc:   "\{\{ states('sensor.solarassistant_battery_state_of_charge') | float(0) \}\}"\
-    battery_full:  "\{\{ battery_soc >= 98 \}\}"\
-    batt_charge_w: "\{\{ battery_power | float(0) \}\}"\
-\
-    # ---- MANUAL OVERRIDE FLAGS ----\
-    override_max:      "\{\{ is_state('input_boolean.ev_max_charge_override', 'on') \}\}"\
-    override_throttle: "\{\{ is_state('input_boolean.ev_throttle_active', 'on') \}\}"\
-\
-    # ---- CORRECTED SURPLUS (available for EV, excluding EV's own draw) ----\
-    true_surplus_w: "\{\{ pv_power - (load_power - ev_power_w) \}\}"\
-\
-    # ---- AMP LIMITS ----\
-    min_amps: 6\
-    max_amps: 40\
-    step: 4\
-\
-    # ---- TIME WINDOWS ----\
-    in_night_window:    "\{\{ hour >= 0 and hour < 7 \}\}"\
-    in_school_window:   "\{\{ hour >= 7 and hour < 9 \}\}"\
-    in_morning_window:  "\{\{ hour >= 9 and hour < 12 \}\}"\
-    in_priority_window: "\{\{ hour >= 12 and hour < 16 \}\}"\
-    in_evening_window:  "\{\{ hour >= 16 and hour < 21 \}\}"\
-    in_prenight_window: "\{\{ hour >= 21 and hour < 24 \}\}"\
-\
-    # ---- MORNING WINDOW: reserve 1000W to battery ----\
-    morning_ev_budget_w: "\{\{ [true_surplus_w - 1000, 0] | max \}\}"\
-    morning_target_amps: "\{\{ [[(morning_ev_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min \}\}"\
-\
-    # ---- PRIORITY WINDOW: tiered battery reserve by SOC ----\
-    # Determines how many watts must go to battery before EV gets any surplus\
-    priority_batt_reserve_w: >\
-      \{\{ (\
-        4000 if battery_soc < 60 else\
-        3000 if battery_soc < 80 else\
-        2000 if battery_soc < 98 else\
-        0\
-      ) | int(0) \}\}\
-\
-    # EV budget = surplus after battery reserve is met AND battery is not discharging\
-    # Battery must be charging at or above reserve target for EV to get more than min\
-    priority_batt_meeting_target: "\{\{ batt_charge_w >= priority_batt_reserve_w \}\}"\
-    priority_batt_discharging:    "\{\{ batt_charge_w < 0 \}\}"\
-\
-    # Step up only if battery is meeting its reserve target AND there is true surplus\
-    # Step down if battery is discharging OR not meeting reserve target\
-    priority_should_step_up:   "\{\{ priority_batt_meeting_target and true_surplus_w > 0 and not priority_batt_discharging \}\}"\
-    priority_should_step_down: "\{\{ priority_batt_discharging or not priority_batt_meeting_target \}\}"\
-\
-  action:\
-\
-    # --- LOG STATUS EACH RUN ---\
-    - service: logbook.log\
-      data:\
-        name: "EV Solar Controller"\
-        message: >\
-          hour=\{\{ hour \}\},\
-          pv=\{\{ pv_power|round(0) \}\}W,\
-          load=\{\{ load_power|round(0) \}\}W,\
-          ev=\{\{ ev_power_w|round(0) \}\}W,\
-          surplus=\{\{ true_surplus_w|round(0) \}\}W,\
-          soc=\{\{ battery_soc|round(1) \}\}%,\
-          batt_pwr=\{\{ battery_power|round(0) \}\}W,\
-          batt_reserve=\{\{ priority_batt_reserve_w \}\}W,\
-          batt_full=\{\{ battery_full \}\},\
-          batt_meeting_target=\{\{ priority_batt_meeting_target \}\},\
-          car_charging=\{\{ car_charging \}\},\
-          current_amp=\{\{ current_amp \}\},\
-          override_max=\{\{ override_max \}\},\
-          override_throttle=\{\{ override_throttle \}\},\
-          window=\{% if in_night_window %\}NIGHT\
-          \{%- elif in_school_window %\}SCHOOL\
-          \{%- elif in_morning_window %\}MORNING\
-          \{%- elif in_priority_window %\}PRIORITY\
-          \{%- elif in_evening_window %\}EVENING\
-          \{%- elif in_prenight_window %\}PRENIGHT\
-          \{%- endif %\}\
-\
-    - choose:\
-\
-        # ================================================================\
-        # MANUAL OVERRIDE: ev_max_charge_override ON \uc0\u8594  force 40A\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ override_max and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 40\
-            - service: logbook.log\
-              data:\
-                name: "EV Solar Controller"\
-                message: "\uc0\u55357 \u56629  MANUAL MAX: ev_max_charge_override is ON \'97 forcing 40A"\
-\
-        # ================================================================\
-        # MANUAL OVERRIDE: ev_throttle_active ON \uc0\u8594  force 8A\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ override_throttle and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 8\
-            - service: logbook.log\
-              data:\
-                name: "EV Solar Controller"\
-                message: "\uc0\u55357 \u57312  MANUAL THROTTLE: ev_throttle_active is ON \'97 forcing 8A"\
-\
-        # ================================================================\
-        # AUTO OVERRIDE: Battery >= 98% \uc0\u8594  force 40A\
-        # Battery full \'97 dump all available solar to EV\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ battery_full and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 40\
-            - service: logbook.log\
-              data:\
-                name: "EV Solar Controller"\
-                message: "\uc0\u55357 \u57314  AUTO OVERRIDE: Battery >= 98% \'97 forcing 40A to EV"\
-\
-        # ================================================================\
-        # NIGHT WINDOW: 00:00\'9607:00 \'97 fixed 20A\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_night_window and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 20\
-\
-        # ================================================================\
-        # SCHOOL WINDOW: 07:00\'9609:00 \'97 fixed 40A\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_school_window and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 40\
-\
-        # ================================================================\
-        # MORNING SOLAR WINDOW: 09:00\'9612:00\
-        # Reserve 1000W to battery, give remainder to EV, min 6A\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_morning_window and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: "\{\{ morning_target_amps \}\}"\
-\
-        # ================================================================\
-        # PRIORITY SOLAR WINDOW: 12:00\'9616:00\
-        # Tiered battery reserve by SOC \'97 battery always charged first\
-        # EV only gets surplus after battery reserve target is met\
-        # Battery NEVER discharges to power EV in this window\
-        #\
-        # SOC < 60%  \uc0\u8594  4000W to battery first\
-        # SOC 60-80% \uc0\u8594  3000W to battery first\
-        # SOC 80-98% \uc0\u8594  2000W to battery first\
-        # SOC >= 98% \uc0\u8594  caught by battery_full override above\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_priority_window and car_charging \}\}"\
-          sequence:\
-            - choose:\
-\
-                # Battery discharging OR not meeting reserve \uc0\u8594  step down\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ priority_should_step_down \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: >\
-                          \{% set new = current_amp - step %\}\
-                          \{\{ [new, min_amps] | max | int \}\}\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u55357 \u56587  PRIORITY STEP DOWN: batt=\{\{ battery_power|round(0) \}\}W,\
-                          reserve=\{\{ priority_batt_reserve_w \}\}W,\
-                          soc=\{\{ battery_soc|round(1) \}\}%,\
-                          new_amps=\{\{ ([current_amp - step, min_amps] | max) | int \}\}\
-\
-                # Battery meeting reserve AND surplus available \uc0\u8594  step up\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ priority_should_step_up \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: >\
-                          \{% set new = current_amp + step %\}\
-                          \{\{ [new, max_amps] | min | int \}\}\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u9889  PRIORITY STEP UP: batt=\{\{ battery_power|round(0) \}\}W,\
-                          reserve=\{\{ priority_batt_reserve_w \}\}W,\
-                          soc=\{\{ battery_soc|round(1) \}\}%,\
-                          new_amps=\{\{ ([current_amp + step, max_amps] | min) | int \}\}\
-\
-        # ================================================================\
-        # EVENING WINDOW: 16:00\'9621:00\
-        # SOC-aware solar-follow \'97 protect battery for evening house loads\
-        #\
-        # SOC >= 90%  \uc0\u8594  solar-follow, no reserve (dump surplus to EV)\
-        # SOC 80-90%  \uc0\u8594  solar-follow, reserve 1000W to battery first\
-        # SOC < 80%   \uc0\u8594  fixed 6A regardless of solar\
-        #\
-        # Battery NEVER discharges to power EV in this window.\
-        # If battery is discharging in any tier \uc0\u8594  step down.\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_evening_window and car_charging \}\}"\
-          sequence:\
-            - variables:\
-                evening_soc_high:   "\{\{ battery_soc >= 90 \}\}"\
-                evening_soc_mid:    "\{\{ battery_soc >= 80 and battery_soc < 90 \}\}"\
-                evening_soc_low:    "\{\{ battery_soc < 80 \}\}"\
-\
-                # High tier: no reserve, all surplus to EV\
-                evening_high_budget_w:    "\{\{ [true_surplus_w, 0] | max \}\}"\
-                evening_high_target_amps: "\{\{ [[(evening_high_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min \}\}"\
-\
-                # Mid tier: reserve 1000W to battery first\
-                evening_mid_budget_w:    "\{\{ [true_surplus_w - 1000, 0] | max \}\}"\
-                evening_mid_target_amps: "\{\{ [[(evening_mid_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min \}\}"\
-\
-                # Is battery discharging?\
-                evening_batt_discharging: "\{\{ batt_charge_w < 0 \}\}"\
-\
-            - choose:\
-\
-                # SOC < 80% \uc0\u8594  fixed 6A\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ evening_soc_low \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: 6\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u55357 \u56628  EVENING LOW SOC: battery=\{\{ battery_soc|round(1) \}\}% < 80% \'97 fixed 6A\
-\
-                # SOC 80-90%, battery discharging \uc0\u8594  step down\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ evening_soc_mid and evening_batt_discharging \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: "\{\{ [current_amp - step, min_amps] | max | int \}\}"\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u55357 \u56587  EVENING MID STEP DOWN: soc=\{\{ battery_soc|round(1) \}\}%,\
-                          batt=\{\{ battery_power|round(0) \}\}W discharging,\
-                          new_amps=\{\{ ([current_amp - step, min_amps] | max) | int \}\}\
-\
-                # SOC 80-90%, surplus available after 1000W reserve \uc0\u8594  step up\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ evening_soc_mid and not evening_batt_discharging and evening_mid_budget_w > 0 \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: "\{\{ [current_amp + step, evening_mid_target_amps] | min | int \}\}"\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u9889  EVENING MID STEP UP: soc=\{\{ battery_soc|round(1) \}\}%,\
-                          surplus=\{\{ true_surplus_w|round(0) \}\}W,\
-                          reserve=1000W, budget=\{\{ evening_mid_budget_w|round(0) \}\}W,\
-                          new_amps=\{\{ ([current_amp + step, evening_mid_target_amps] | min) | int \}\}\
-\
-                # SOC >= 90%, battery discharging \uc0\u8594  step down\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ evening_soc_high and evening_batt_discharging \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: "\{\{ [current_amp - step, min_amps] | max | int \}\}"\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u55357 \u56587  EVENING HIGH STEP DOWN: soc=\{\{ battery_soc|round(1) \}\}%,\
-                          batt=\{\{ battery_power|round(0) \}\}W discharging,\
-                          new_amps=\{\{ ([current_amp - step, min_amps] | max) | int \}\}\
-\
-                # SOC >= 90%, surplus available \uc0\u8594  step up, no reserve\
-                - conditions:\
-                    - condition: template\
-                      value_template: "\{\{ evening_soc_high and not evening_batt_discharging and evening_high_budget_w > 0 \}\}"\
-                  sequence:\
-                    - service: number.set_value\
-                      target:\
-                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-                      data:\
-                        value: "\{\{ [current_amp + step, evening_high_target_amps] | min | int \}\}"\
-                    - service: logbook.log\
-                      data:\
-                        name: "EV Solar Controller"\
-                        message: >\
-                          \uc0\u9728 \u65039  EVENING HIGH STEP UP: soc=\{\{ battery_soc|round(1) \}\}%,\
-                          surplus=\{\{ true_surplus_w|round(0) \}\}W, no reserve,\
-                          new_amps=\{\{ ([current_amp + step, evening_high_target_amps] | min) | int \}\}\
-\
-        # ================================================================\
-        # PRE-NIGHT WINDOW: 21:00\'9624:00 \'97 fixed 10A\
-        # Part-peak winding down, bridge to midnight Sol-Ark top-up\
-        # ================================================================\
-        - conditions:\
-            - condition: template\
-              value_template: "\{\{ in_prenight_window and car_charging \}\}"\
-          sequence:\
-            - service: number.set_value\
-              target:\
-                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current\
-              data:\
-                value: 10\
-}
+- id: wallbox_auto_reload
+  alias: Wallbox Auto Reload on Unavailable
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id:
+        - sensor.wallbox_pulsar_plus_sn_1331793_charging_power
+        - sensor.wallbox_pulsar_plus_sn_1331793_status_description
+        - number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+      to: "unavailable"
+      for:
+        minutes: 2
+
+  action:
+    - service: logbook.log
+      data:
+        name: "Wallbox Auto Reload"
+        message: "⚠️ Wallbox sensor unavailable for 2 min — triggering integration reload"
+    - service: homeassistant.reload_config_entry
+      target:
+        entity_id: sensor.wallbox_pulsar_plus_sn_1331793_charging_power
+    - delay:
+        seconds: 30
+    - service: logbook.log
+      data:
+        name: "Wallbox Auto Reload"
+        message: >
+          ✅ Reload complete. Charging power now:
+          {{ states('sensor.wallbox_pulsar_plus_sn_1331793_charging_power') }} kW,
+          Status: {{ states('sensor.wallbox_pulsar_plus_sn_1331793_status_description') }}
+
+# ============================================================
+#  EV SOLAR CONTROLLER — automations.yaml
+#  Updated: 2026-03-04 v4
+#
+#  ENTITY REFERENCE (confirmed):
+#    Wallbox amp control : number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+#    Wallbox pause/resume: switch.wallbox_pulsar_plus_sn_1331793_pause_resume  (on=charging, off=paused)
+#    Wallbox power (mean): sensor.wallbox_charging_power_mean_2m               (kW, 2m rolling avg)
+#    Wallbox status      : sensor.wallbox_pulsar_plus_sn_1331793_status_description
+#    Solar PV (mean)     : sensor.pv_power_mean_2m                             (W, 2m rolling avg)
+#    Load (mean)         : sensor.load_power_mean_2m                           (W, 2m rolling avg)
+#    Battery power (mean): sensor.battery_power_mean_2m                        (W, 2m rolling avg)
+#    Battery SOC         : sensor.solarassistant_battery_state_of_charge       (%)
+#
+#  MANUAL OVERRIDES (input_boolean):
+#    ev_max_charge_override  → forces 40A immediately, overrides everything
+#    ev_throttle_active      → forces 8A immediately, overrides everything
+#    If both ON simultaneously → last one set wins (equal priority)
+#
+#  TIME WINDOWS:
+#    00:00–07:00  Night      → 20A fixed (emergency overnight car need)
+#    07:00–09:00  School     → 40A fixed (quick top-up before school departure)
+#    09:00–12:00  Morning    → Solar follow, reserve 1000W to battery, min 6A
+#    12:00–16:00  Priority   → Tiered battery reserve by SOC, no battery discharge to EV
+#                              SOC < 60%  → reserve 4000W to battery
+#                              SOC 60-80% → reserve 3000W to battery
+#                              SOC 80-98% → reserve 2000W to battery
+#                              SOC >= 98% → battery full, 40A override
+#                              EV amps always calculated from solar surplus only
+#                              (battery never discharges to power EV in this window)
+#    16:00–21:00  Evening    → SOC-aware solar-follow
+#                              SOC >= 90%  → solar-follow, no reserve (dump surplus to EV)
+#                              SOC 80-90% → solar-follow, reserve 1000W to battery
+#                              SOC < 80%  → fixed 6A regardless of solar
+#                              Battery NEVER discharges to power EV in this window
+#    21:00–24:00  Pre-night  → 10A (part-peak winding down, pre-midnight prep)
+#
+#  AUTOMATIC OVERRIDES (any window, checked first):
+#    Battery SOC >= 98%         → 40A (battery full, dump all solar to EV)
+#    ev_max_charge_override ON  → 40A (manual max charge request)
+#    ev_throttle_active ON      → 8A  (manual throttle request)
+#    Car not charging           → skip amp logic
+#
+#  SURPLUS CALCULATION (corrected):
+#    true_surplus = pv_power - (load_power - ev_power_w)
+#    Removes EV draw from load so surplus reflects what is
+#    actually available FOR the EV, not consumed by it.
+#
+#  BATTERY POWER SIGN CONVENTION (Solar Assistant):
+#    Positive = charging into battery
+#    Negative = discharging from battery
+#
+#  ALL POWER VALUES USE 2-MINUTE ROLLING AVERAGES for stability.
+# ============================================================
+
+- id: ev_solar_controller
+  alias: EV Solar Controller
+  mode: restart
+
+  trigger:
+    - platform: time_pattern
+      minutes: "/3"
+
+  variables:
+    hour: "{{ now().hour }}"
+
+    # ---- POWER SENSORS (2-minute rolling averages) ----
+    pv_power:      "{{ states('sensor.pv_power_mean_2m') | float(0) }}"
+    load_power:    "{{ states('sensor.load_power_mean_2m') | float(0) }}"
+    battery_power: "{{ states('sensor.battery_power_mean_2m') | float(0) }}"
+
+    # ---- WALLBOX (2-minute rolling average, kW → W) ----
+    ev_power_w:   "{{ (states('sensor.wallbox_charging_power_mean_2m') | float(0)) * 1000 }}"
+    current_amp:  "{{ states('number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current') | float(6) }}"
+    car_charging: "{{ states('sensor.wallbox_pulsar_plus_sn_1331793_status_description') | lower == 'charging' }}"
+
+    # ---- BATTERY ----
+    battery_soc:   "{{ states('sensor.solarassistant_battery_state_of_charge') | float(0) }}"
+    battery_full:  "{{ battery_soc >= 98 }}"
+    batt_charge_w: "{{ battery_power | float(0) }}"
+
+    # ---- MANUAL OVERRIDE FLAGS ----
+    override_max:      "{{ is_state('input_boolean.ev_max_charge_override', 'on') }}"
+    override_throttle: "{{ is_state('input_boolean.ev_throttle_active', 'on') }}"
+
+    # ---- CORRECTED SURPLUS (available for EV, excluding EV's own draw) ----
+    true_surplus_w: "{{ pv_power - (load_power - ev_power_w) }}"
+
+    # ---- AMP LIMITS ----
+    min_amps: 6
+    max_amps: 40
+    step: 4
+
+    # ---- TIME WINDOWS ----
+    in_night_window:    "{{ hour >= 0 and hour < 7 }}"
+    in_school_window:   "{{ hour >= 7 and hour < 9 }}"
+    in_morning_window:  "{{ hour >= 9 and hour < 12 }}"
+    in_priority_window: "{{ hour >= 12 and hour < 16 }}"
+    in_evening_window:  "{{ hour >= 16 and hour < 21 }}"
+    in_prenight_window: "{{ hour >= 21 and hour < 24 }}"
+
+    # ---- MORNING WINDOW: reserve 1000W to battery ----
+    morning_ev_budget_w: "{{ [true_surplus_w - 1000, 0] | max }}"
+    morning_target_amps: "{{ [[(morning_ev_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min }}"
+
+    # ---- PRIORITY WINDOW: tiered battery reserve by SOC ----
+    # Determines how many watts must go to battery before EV gets any surplus
+    priority_batt_reserve_w: >
+      {{ (
+        4000 if battery_soc < 60 else
+        3000 if battery_soc < 80 else
+        2000 if battery_soc < 98 else
+        0
+      ) | int(0) }}
+
+    # EV budget = surplus after battery reserve is met AND battery is not discharging
+    # Battery must be charging at or above reserve target for EV to get more than min
+    priority_batt_meeting_target: "{{ batt_charge_w >= priority_batt_reserve_w }}"
+    priority_batt_discharging:    "{{ batt_charge_w < 0 }}"
+
+    # Step up only if battery is meeting its reserve target AND there is true surplus
+    # Step down if battery is discharging OR not meeting reserve target
+    priority_should_step_up:   "{{ priority_batt_meeting_target and true_surplus_w > 0 and not priority_batt_discharging }}"
+    priority_should_step_down: "{{ priority_batt_discharging or not priority_batt_meeting_target }}"
+
+  action:
+
+    # --- LOG STATUS EACH RUN ---
+    - service: logbook.log
+      data:
+        name: "EV Solar Controller"
+        message: >
+          hour={{ hour }},
+          pv={{ pv_power|round(0) }}W,
+          load={{ load_power|round(0) }}W,
+          ev={{ ev_power_w|round(0) }}W,
+          surplus={{ true_surplus_w|round(0) }}W,
+          soc={{ battery_soc|round(1) }}%,
+          batt_pwr={{ battery_power|round(0) }}W,
+          batt_reserve={{ priority_batt_reserve_w }}W,
+          batt_full={{ battery_full }},
+          batt_meeting_target={{ priority_batt_meeting_target }},
+          car_charging={{ car_charging }},
+          current_amp={{ current_amp }},
+          override_max={{ override_max }},
+          override_throttle={{ override_throttle }},
+          window={% if in_night_window %}NIGHT
+          {%- elif in_school_window %}SCHOOL
+          {%- elif in_morning_window %}MORNING
+          {%- elif in_priority_window %}PRIORITY
+          {%- elif in_evening_window %}EVENING
+          {%- elif in_prenight_window %}PRENIGHT
+          {%- endif %}
+
+    - choose:
+
+        # ================================================================
+        # MANUAL OVERRIDE: ev_max_charge_override ON → force 40A
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ override_max and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 40
+            - service: logbook.log
+              data:
+                name: "EV Solar Controller"
+                message: "🔵 MANUAL MAX: ev_max_charge_override is ON — forcing 40A"
+
+        # ================================================================
+        # MANUAL OVERRIDE: ev_throttle_active ON → force 8A
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ override_throttle and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 8
+            - service: logbook.log
+              data:
+                name: "EV Solar Controller"
+                message: "🟠 MANUAL THROTTLE: ev_throttle_active is ON — forcing 8A"
+
+        # ================================================================
+        # AUTO OVERRIDE: Battery >= 98% → force 40A
+        # Battery full — dump all available solar to EV
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ battery_full and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 40
+            - service: logbook.log
+              data:
+                name: "EV Solar Controller"
+                message: "🟢 AUTO OVERRIDE: Battery >= 98% — forcing 40A to EV"
+
+        # ================================================================
+        # NIGHT WINDOW: 00:00–07:00 — fixed 20A
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_night_window and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 20
+
+        # ================================================================
+        # SCHOOL WINDOW: 07:00–09:00 — fixed 40A
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_school_window and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 40
+
+        # ================================================================
+        # MORNING SOLAR WINDOW: 09:00–12:00
+        # Reserve 1000W to battery, give remainder to EV, min 6A
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_morning_window and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: "{{ morning_target_amps }}"
+
+        # ================================================================
+        # PRIORITY SOLAR WINDOW: 12:00–16:00
+        # Tiered battery reserve by SOC — battery always charged first
+        # EV only gets surplus after battery reserve target is met
+        # Battery NEVER discharges to power EV in this window
+        #
+        # SOC < 60%  → 4000W to battery first
+        # SOC 60-80% → 3000W to battery first
+        # SOC 80-98% → 2000W to battery first
+        # SOC >= 98% → caught by battery_full override above
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_priority_window and car_charging }}"
+          sequence:
+            - choose:
+
+                # Battery discharging OR not meeting reserve → step down
+                - conditions:
+                    - condition: template
+                      value_template: "{{ priority_should_step_down }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: >
+                          {% set new = current_amp - step %}
+                          {{ [new, min_amps] | max | int }}
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          🔋 PRIORITY STEP DOWN: batt={{ battery_power|round(0) }}W,
+                          reserve={{ priority_batt_reserve_w }}W,
+                          soc={{ battery_soc|round(1) }}%,
+                          new_amps={{ ([current_amp - step, min_amps] | max) | int }}
+
+                # Battery meeting reserve AND surplus available → step up
+                - conditions:
+                    - condition: template
+                      value_template: "{{ priority_should_step_up }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: >
+                          {% set new = current_amp + step %}
+                          {{ [new, max_amps] | min | int }}
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          ⚡ PRIORITY STEP UP: batt={{ battery_power|round(0) }}W,
+                          reserve={{ priority_batt_reserve_w }}W,
+                          soc={{ battery_soc|round(1) }}%,
+                          new_amps={{ ([current_amp + step, max_amps] | min) | int }}
+
+        # ================================================================
+        # EVENING WINDOW: 16:00–21:00
+        # SOC-aware solar-follow — protect battery for evening house loads
+        #
+        # SOC >= 90%  → solar-follow, no reserve (dump surplus to EV)
+        # SOC 80-90%  → solar-follow, reserve 1000W to battery first
+        # SOC < 80%   → fixed 6A regardless of solar
+        #
+        # Battery NEVER discharges to power EV in this window.
+        # If battery is discharging in any tier → step down.
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_evening_window and car_charging }}"
+          sequence:
+            - variables:
+                evening_soc_high:   "{{ battery_soc >= 90 }}"
+                evening_soc_mid:    "{{ battery_soc >= 80 and battery_soc < 90 }}"
+                evening_soc_low:    "{{ battery_soc < 80 }}"
+
+                # High tier: no reserve, all surplus to EV
+                evening_high_budget_w:    "{{ [true_surplus_w, 0] | max }}"
+                evening_high_target_amps: "{{ [[(evening_high_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min }}"
+
+                # Mid tier: reserve 1000W to battery first
+                evening_mid_budget_w:    "{{ [true_surplus_w - 1000, 0] | max }}"
+                evening_mid_target_amps: "{{ [[(evening_mid_budget_w / 240) | round(0, 'floor') | int, min_amps] | max, max_amps] | min }}"
+
+                # Is battery discharging?
+                evening_batt_discharging: "{{ batt_charge_w < 0 }}"
+
+            - choose:
+
+                # SOC < 80% → fixed 6A
+                - conditions:
+                    - condition: template
+                      value_template: "{{ evening_soc_low }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: 6
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          🔴 EVENING LOW SOC: battery={{ battery_soc|round(1) }}% < 80% — fixed 6A
+
+                # SOC 80-90%, battery discharging → step down
+                - conditions:
+                    - condition: template
+                      value_template: "{{ evening_soc_mid and evening_batt_discharging }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: "{{ [current_amp - step, min_amps] | max | int }}"
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          🔋 EVENING MID STEP DOWN: soc={{ battery_soc|round(1) }}%,
+                          batt={{ battery_power|round(0) }}W discharging,
+                          new_amps={{ ([current_amp - step, min_amps] | max) | int }}
+
+                # SOC 80-90%, surplus available after 1000W reserve → step up
+                - conditions:
+                    - condition: template
+                      value_template: "{{ evening_soc_mid and not evening_batt_discharging and evening_mid_budget_w > 0 }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: "{{ [current_amp + step, evening_mid_target_amps] | min | int }}"
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          ⚡ EVENING MID STEP UP: soc={{ battery_soc|round(1) }}%,
+                          surplus={{ true_surplus_w|round(0) }}W,
+                          reserve=1000W, budget={{ evening_mid_budget_w|round(0) }}W,
+                          new_amps={{ ([current_amp + step, evening_mid_target_amps] | min) | int }}
+
+                # SOC >= 90%, battery discharging → step down
+                - conditions:
+                    - condition: template
+                      value_template: "{{ evening_soc_high and evening_batt_discharging }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: "{{ [current_amp - step, min_amps] | max | int }}"
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          🔋 EVENING HIGH STEP DOWN: soc={{ battery_soc|round(1) }}%,
+                          batt={{ battery_power|round(0) }}W discharging,
+                          new_amps={{ ([current_amp - step, min_amps] | max) | int }}
+
+                # SOC >= 90%, surplus available → step up, no reserve
+                - conditions:
+                    - condition: template
+                      value_template: "{{ evening_soc_high and not evening_batt_discharging and evening_high_budget_w > 0 }}"
+                  sequence:
+                    - service: number.set_value
+                      target:
+                        entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+                      data:
+                        value: "{{ [current_amp + step, evening_high_target_amps] | min | int }}"
+                    - service: logbook.log
+                      data:
+                        name: "EV Solar Controller"
+                        message: >
+                          ☀️ EVENING HIGH STEP UP: soc={{ battery_soc|round(1) }}%,
+                          surplus={{ true_surplus_w|round(0) }}W, no reserve,
+                          new_amps={{ ([current_amp + step, evening_high_target_amps] | min) | int }}
+
+        # ================================================================
+        # PRE-NIGHT WINDOW: 21:00–24:00 — fixed 10A
+        # Part-peak winding down, bridge to midnight Sol-Ark top-up
+        # ================================================================
+        - conditions:
+            - condition: template
+              value_template: "{{ in_prenight_window and car_charging }}"
+          sequence:
+            - service: number.set_value
+              target:
+                entity_id: number.wallbox_pulsar_plus_sn_1331793_maximum_charging_current
+              data:
+                value: 10
