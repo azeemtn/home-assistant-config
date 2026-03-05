@@ -2,18 +2,24 @@
 
 This repo contains the core Home Assistant configuration for a solar-powered home that automatically manages EV charging based on real-time solar production, battery state, and time of day.
 
+> **Adapt freely to your own setup.** Entity names, amp limits, time windows, and SOC thresholds will all vary by hardware and tariff structure. The logic and patterns here are meant to be a starting point, not a drop-in replacement.
+
 ## Overview
 
-**Solar Assistant** monitors the inverter and publishes data over MQTT to Home Assistant. HA selectively records that data (to keep the database manageable), computes 2-minute rolling averages for stability, and uses those averages to dynamically control the **Wallbox Pulsar Plus** EV charger — maximising solar self-consumption while protecting the home battery.
+**Solar Assistant** monitors the inverter and publishes live power data over MQTT to Home Assistant. HA selectively records that data (to keep the database manageable), computes 2-minute rolling averages for stability, and uses those averages to dynamically control the **Wallbox Pulsar Plus** EV charger — maximising solar self-consumption while protecting the home battery.
+
+The time windows are designed around a **time-of-use electricity tariff**: off-peak overnight rates make it worthwhile to allow heavier grid-powered charging at night, while the daytime windows prioritise solar surplus and battery health.
 
 ---
 
-## Hardware
+## Hardware (reference setup)
+
+These configs were written for the following hardware. Yours will differ — update entity names accordingly.
 
 | Component | Details |
 |---|---|
 | Inverter | Sol-Ark (monitored via Solar Assistant) |
-| EV Charger | Wallbox Pulsar Plus (SN: 1331793) |
+| EV Charger | Wallbox Pulsar Plus |
 | Solar monitoring | Solar Assistant → MQTT → Home Assistant |
 
 ---
@@ -104,12 +110,12 @@ The EV's own draw is subtracted from load before calculating surplus, so the con
 
 | Window | Hours | Behaviour |
 |---|---|---|
-| Night | 00:00–07:00 | Fixed **20A** — covers overnight emergency charging need |
+| Night | 00:00–07:00 | Fixed **20A** — cheap off-peak grid rate, top up the car overnight |
 | School | 07:00–09:00 | Fixed **40A** — quick top-up before school departure |
 | Morning | 09:00–12:00 | Solar-follow, reserve 1000W to battery first, minimum 6A |
 | Priority | 12:00–16:00 | Tiered battery reserve by SOC (see below), battery never discharges to power EV |
 | Evening | 16:00–21:00 | SOC-aware solar-follow, battery never discharges to power EV |
-| Pre-night | 21:00–24:00 | Fixed **10A** — wind-down before midnight |
+| Pre-night | 21:00–24:00 | Fixed **10A** — winding down before off-peak window opens at midnight |
 
 **Priority window (12:00–16:00) — tiered battery reserve**
 
