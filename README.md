@@ -24,6 +24,39 @@ These configs were written for the following hardware. Yours will differ — upd
 
 ---
 
+## Getting started
+
+If you have Solar Assistant and a Wallbox Pulsar Plus, this should be close to drop-in. There are only two things to find-and-replace before copying the files in:
+
+### 1. Wallbox serial number
+
+The Wallbox HA integration names entities using your charger's serial number. This config uses `1331793` throughout both YAML files (26 occurrences). Replace it with your own serial number, which you can find in the Wallbox app under **Charger settings → Info**, or on the label on the unit itself.
+
+```
+Find:    1331793
+Replace: <your serial number>
+```
+
+### 2. Solar Assistant entity prefix
+
+All Solar Assistant entities in this config use the prefix `solarassistant_` — for example, `sensor.solarassistant_pv_power`. This comes from the name given to the SA device in Home Assistant, and yours may differ (common alternatives: `solar_assistant`, your inverter model name, etc.).
+
+Check your actual entity names in **Settings → Devices & Services → Solar Assistant**, then find-and-replace the prefix if needed:
+
+```
+Find:    solarassistant_
+Replace: <your SA entity prefix>_
+```
+
+### That's it
+
+Everything else is self-contained:
+- The two `input_boolean` helpers are defined in `configuration.yaml` and will be created automatically
+- The five statistics (smoothing) sensors are defined here and reference only SA entities
+- The template sensors and automation logic need no other changes
+
+---
+
 ## Files
 
 ### `configuration.yaml`
