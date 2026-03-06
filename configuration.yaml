@@ -1,3 +1,11 @@
+# ============================================================
+# configuration.yaml
+# Version: 2026.03.06.1
+# Changes: Added Riemann Sum integration sensors for PV and
+#          Load power, plus daily/monthly utility meters for
+#          PV, Load, and Wallbox EV charging totals.
+# ============================================================
+
 # Loads default set of integrations. Do not remove.
 default_config:
 
@@ -29,7 +37,6 @@ recorder:
       - sensor.wallbox_charging_power_mean_2m
       - sensor.battery_discharge_w_discharge_positive
       - sensor.battery_discharge_w_discharge_negative
-   
 
 sensor:
   - platform: statistics
@@ -38,34 +45,50 @@ sensor:
     state_characteristic: mean
     max_age:
       minutes: 2
-
   - platform: statistics
     name: "Load power mean 2m"
     entity_id: sensor.solarassistant_load_power
     state_characteristic: mean
     max_age:
       minutes: 2
-
   - platform: statistics
     name: "Grid power mean 2m"
     entity_id: sensor.solarassistant_grid_power
     state_characteristic: mean
     max_age:
       minutes: 2
-
   - platform: statistics
     name: "Battery power mean 2m"
     entity_id: sensor.solarassistant_battery_power
     state_characteristic: mean
     max_age:
       minutes: 2
-
   - platform: statistics
     name: "Wallbox charging power mean 2m"
     entity_id: sensor.wallbox_pulsar_plus_sn_1331793_charging_power
     state_characteristic: mean
     max_age:
       minutes: 2
+
+  # ============================================================
+  # RIEMANN SUM INTEGRATION — Daily/Monthly Energy Totals
+  # Converts instantaneous W readings to kWh accumulators
+  # Independent of Solar Assistant's weekly reset schedule
+  # ============================================================
+  - platform: integration
+    source: sensor.solarassistant_pv_power
+    name: pv_energy_kwh
+    unit_prefix: k
+    round: 2
+    method: trapezoidal
+    unit_time: h
+  - platform: integration
+    source: sensor.solarassistant_load_power
+    name: load_energy_kwh
+    unit_prefix: k
+    round: 2
+    method: trapezoidal
+    unit_time: h
 
 template:
   - sensor:
@@ -77,7 +100,6 @@ template:
         state: >
           {% set p = states('sensor.battery_power_mean_2m') | float(0) %}
           {{ p if p > 0 else 0 }}
-
       - name: "Battery discharge W, discharge negative"
         unique_id: battery_discharge_w_discharge_negative
         unit_of_measurement: "W"
@@ -89,7 +111,32 @@ input_boolean:
   ev_max_charge_override:
     name: EV Max Charge Override
     icon: mdi:lightning-bolt
-
   ev_throttle_active:
     name: EV Throttle Active
     icon: mdi:speedometer_slow
+
+# ============================================================
+# UTILITY METERS — Daily and Monthly Energy Totals
+# Wallbox: native total_increasing sensor (accurate)
+# PV + Load: from Riemann Sum integration sensors above
+# All reset at midnight daily / 1st of month
+# ============================================================
+utility_meter:
+  wallbox_daily_kwh:
+    source: sensor.wallbox_pulsar_plus_sn_1331793_added_energy
+    cycle: daily
+  wallbox_monthly_kwh:
+    source: sensor.wallbox_pulsar_plus_sn_1331793_added_energy
+    cycle: monthly
+  pv_daily_kwh:
+    source: sensor.pv_energy_kwh
+    cycle: daily
+  pv_monthly_kwh:
+    source: sensor.pv_energy_kwh
+    cycle: monthly
+  load_daily_kwh:
+    source: sensor.load_energy_kwh
+    cycle: daily
+  load_monthly_kwh:
+    source: sensor.load_energy_kwh
+    cycle: monthly
